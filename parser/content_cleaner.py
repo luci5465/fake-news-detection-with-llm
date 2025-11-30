@@ -1,43 +1,88 @@
-import re
 import json
+import re
 import os
+from bs4 import BeautifulSoup
 
-class ContentCleaner:
-    def normalize_whitespace(self, text):
-        text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\n\s*\n+", "\n\n", text)
-        return text.strip()
 
-    def remove_control_chars(self, text):
-        return re.sub(r"[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]", "", text)
+def normalize_persian(text):
+    """یکنواخت‌سازی حروف فارسی."""
+    replacements = {
+        "ي": "ی",
+        "ى": "ی",
+        "ك": "ک",
+        "‌": " ",  # نیم‌فاصله → فاصله
+        "\u200c": " ",  # ZWNJ
+    }
+    for f, t in replacements.items():
+        text = text.replace(f, t)
+    return text
 
-    def clean(self, item):
-        title = item.get("title") or ""
-        content = item.get("content") or ""
 
-        title = self.remove_control_chars(title)
-        content = self.remove_control_chars(content)
+def clean_text(raw_html):
+    """حذف کامل HTML و تمیز کردن متن مقاله."""
+    soup = BeautifulSoup(raw_html, "html.parser")
 
-        title = self.normalize_whitespace(title)
-        content = self.normalize_whitespace(content)
+    # حذف اسکریپت، استایل، تبلیغات
+    for tag in soup(["script", "style", "noscript", "footer", "header"]):
+        tag.extract()
 
-        item["title"] = title
-        item["content"] = content
+    text = soup.get_text(separator=" ", strip=True)
 
-        return item
+    # حذف فاصله‌های تکراری
+    text = re.sub(r"\s+", " ", text)
+
+    # نرمال‌سازی فارسی
+    text = normalize_persian(text)
+
+    return text.strip()
+
+
+def clean_dataset(input_path, output_path, min_chars=300):
+    """پاک‌سازی کامل دیتاست و ذخیره نسخه تمیز شده."""
+    with open(input_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    cleaned = []
+
+    for item in data:
+        raw_text = item.get("content", "")
+        if not raw_text or len(raw_text.strip()) == 0:
+            continue
+
+        cleaned_text = clean_text(raw_text)
+
+        # رد مقاله‌های خیلی کوتاه/خراب
+        if len(cleaned_text) < min_chars:
+            continue
+
+        # ساختار خروجی استاندارد
+        cleaned.append(
+            {
+                "id": item.get("id"),
+                "url": item.get("url"),
+                "title": normalize_persian(item.get("title", "")),
+                "content": cleaned_text,
+                "publish_date": item.get("publish_date"),
+                "outgoing_links": item.get("outgoing_links", []),
+                "incoming_links": [],  # بعداً ساخته می‌شود
+                "language": "fa",
+                "source": "isna",
+                "label": "real",
+            }
+        )
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+
+    print(f"✓ Cleaned {len(cleaned)} articles → {output_path}")
+
 
 if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.dirname(__file__))
-    raw_path = os.path.join(base_dir, "data", "isna_sample.json")
-    cleaned_dir = os.path.join(base_dir, "data", "cleaned")
-    os.makedirs(cleaned_dir, exist_ok=True)
-    cleaned_path = os.path.join(cleaned_dir, "isna_cleaned.json")
 
-    with open(raw_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    input_path = os.path.join(base_dir, "data", "isna_sample.json")
+    output_path = os.path.join(base_dir, "data", "cleaned", "isna_cleaned.json")
 
-    cleaner = ContentCleaner()
-    cleaned = [cleaner.clean(x) for x in data]
-
-    with open(cleaned_path, "w", encoding="utf-8") as f:
-        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    clean_dataset(input_path, output_path)
