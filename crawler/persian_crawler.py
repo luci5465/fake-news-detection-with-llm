@@ -2,135 +2,182 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import time
-from urllib.parse import urljoin
+import random
+from urllib.parse import urljoin, urlparse
 import os
 
 
 class IsnaCrawler:
-    def __init__(self, base_url="https://www.isna.ir/", delay=0.8):
+    def __init__(
+        self,
+        base_url="https://www.isna.ir/",
+        max_articles=150,
+        request_timeout=10,
+        min_content_chars=500,
+        delay_min=0.5,
+        delay_max=1.5,
+    ):
         self.base_url = base_url.rstrip("/")
-        self.delay = delay
+        self.domain = urlparse(self.base_url).netloc
+        self.max_articles = max_articles
+        self.request_timeout = request_timeout
+        self.min_content_chars = min_content_chars
+        self.delay_min = delay_min
+        self.delay_max = delay_max
+
         self.visited = set()
-        self.results = []
+        self.articles = []
+        self.article_ids = {}  # url -> int id
+
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0 Safari/537.36"
+                )
+            }
+        )
+
+    def _sleep(self):
+        time.sleep(random.uniform(self.delay_min, self.delay_max))
 
     def fetch(self, url):
         try:
-            r = requests.get(
-                url,
-                timeout=15,
-                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
-            )
-            if r.status_code == 200:
-                return r.text
+            resp = self.session.get(url, timeout=self.request_timeout)
+            if resp.status_code == 200 and "text/html" in resp.headers.get("Content-Type", ""):
+                return resp.text
             return None
         except Exception as e:
-            print("   ⚠ Fetch error:", e)
+            print(f"   ! Fetch error for {url}: {e}")
             return None
 
-    def extract_title(self, soup):
-        candidates = [
-            ("h1", {"class": "first-title"}),
-            ("h1", {}),
-            ("h2", {}),
-        ]
-        for tag, attr in candidates:
-            t = soup.find(tag, attr)
-            if t:
-                return t.get_text(strip=True)
-        return ""
+    def _is_same_domain(self, url):
+        return urlparse(url).netloc == self.domain
 
-    def extract_content(self, soup):
-        candidates = [
-            "item-text",
-            "read__content",
-            "body",
-            "news-body",
-            "report-content",
-            "article-body",
-            "content",
-            "text",
-        ]
-        for c in candidates:
-            div = soup.find("div", class_=c)
-            if div:
-                return div.get_text(" ", strip=True)
+    def _normalize_url(self, url):
+        # حذف fragment و trailing slash اضافه
+        parsed = urlparse(url)
+        clean = parsed._replace(fragment="").geturl()
+        if clean.endswith("/"):
+            clean = clean[:-1]
+        return clean
 
-        paras = soup.find_all("p")
-        text = " ".join(p.get_text(" ", strip=True) for p in paras)
-        return text
+    def _is_article_page(self, url, soup):
+        """
+        ساده ولی مؤثر:
+        - آدرس شامل /news/ باشد
+        - عنوان و متن خبر وجود داشته باشد
+        """
+        if "/news/" not in url:
+            return False
 
-    def extract_links(self, soup, current_url):
-        links = []
-        for a in soup.find_all("a", href=True):
-            full = urljoin(current_url, a["href"])
-            if full.startswith(self.base_url):
-                links.append(full)
-        return links
+        title_tag = soup.find("h1", class_="first-title")
+        text_tag = soup.find("div", class_="item-text")
+        if not title_tag or not text_tag:
+            return False
 
-    def parse_page(self, url, html):
-        soup = BeautifulSoup(html, "html.parser")
+        content = text_tag.get_text(strip=True)
+        if len(content) < self.min_content_chars:
+            return False
 
-        title = self.extract_title(soup)
-        content = self.extract_content(soup)
-        outgoing = self.extract_links(soup, url)
+        return True
 
+    def parse_article(self, url, soup):
+        title_tag = soup.find("h1", class_="first-title")
+        text_tag = soup.find("div", class_="item-text")
         date_tag = soup.find("span", class_="date-publish")
-        publish_date = date_tag.get_text(strip=True) if date_tag else ""
+
+        title = title_tag.get_text(strip=True) if title_tag else ""
+        content = text_tag.get_text(separator="\n", strip=True) if text_tag else ""
+        publish_date = date_tag.get_text(strip=True) if date_tag else None
+
+        outgoing = []
+        for a in soup.find_all("a", href=True):
+            full = urljoin(url, a["href"])
+            full = self._normalize_url(full)
+            if self._is_same_domain(full):
+                outgoing.append(full)
+
+        # id یکتا برای هر مقاله
+        if url not in self.article_ids:
+            self.article_ids[url] = len(self.article_ids) + 1
 
         return {
+            "id": self.article_ids[url],
             "url": url,
             "title": title,
             "content": content,
             "publish_date": publish_date,
             "outgoing_links": outgoing,
-            "incoming_links": [],
+            "incoming_links": [],  # بعداً در graph_builder پر می‌کنیم
             "language": "fa",
+            "source": "isna",
             "label": "real",
         }
 
-    def crawl(self, start_url, max_pages=150):
-        queue = [start_url]
+    def crawl(self, start_url=None):
+        if start_url is None:
+            start_url = self.base_url
 
-        while queue and len(self.results) < max_pages:
+        start_url = self._normalize_url(start_url)
+        queue = [start_url]
+        pages_seen = 0
+
+        while queue and len(self.articles) < self.max_articles:
             url = queue.pop(0)
+            url = self._normalize_url(url)
 
             if url in self.visited:
                 continue
             self.visited.add(url)
 
-            print(f"[{len(self.results)}/{max_pages}] Fetching → {url}")
-
+            print(f"[{len(self.articles)}/{self.max_articles}] Fetching → {url}")
             html = self.fetch(url)
             if not html:
-                print("   ⚠ No HTML")
                 continue
 
-            data = self.parse_page(url, html)
+            pages_seen += 1
+            soup = BeautifulSoup(html, "html.parser")
 
-            # اینجا فقط برای صفحات خبری واقعی ذخیره می‌کنیم
-            if data["content"] and len(data["content"]) > 200 and "/news/" in url:
-                print("   ✓ Saved article:", data["title"][:60])
-                self.results.append(data)
+            if self._is_article_page(url, soup):
+                article = self.parse_article(url, soup)
+                self.articles.append(article)
+                print(f"   ✓ Saved article: {article['title'][:60]}")
             else:
                 print("   ⚠ Not an article (or too short)")
 
-            for o in data["outgoing_links"]:
-                if o not in self.visited:
-                    queue.append(o)
+            # اضافه‌کردن لینک‌های جدید به صف
+            for a in soup.find_all("a", href=True):
+                full = urljoin(url, a["href"])
+                full = self._normalize_url(full)
+                if not self._is_same_domain(full):
+                    continue
+                if full not in self.visited:
+                    queue.append(full)
 
-            time.sleep(self.delay)
+            self._sleep()
 
-        return self.results
+        print(f"\n✓ Finished. Saved {len(self.articles)} articles. "
+              f"(visited {pages_seen} HTML pages total)")
+        return self.articles
+
+    def save(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.articles, f, ensure_ascii=False, indent=2)
+        print(f"✓ Saved {len(self.articles)} articles to {path}")
 
 
 if __name__ == "__main__":
-    crawler = IsnaCrawler()
-    data = crawler.crawl("https://www.isna.ir/", max_pages=150)
-
     base_dir = os.path.dirname(os.path.dirname(__file__))
     save_path = os.path.join(base_dir, "data", "isna_sample.json")
 
-    with open(save_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-    print(f"\n✓ Saved {len(data)} articles to {save_path}")
+    crawler = IsnaCrawler(
+        base_url="https://www.isna.ir/",
+        max_articles=150,
+        min_content_chars=500,
+    )
+    articles = crawler.crawl()
+    crawler.save(save_path)
