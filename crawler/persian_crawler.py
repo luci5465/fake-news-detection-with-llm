@@ -57,7 +57,6 @@ class IsnaCrawler:
         return urlparse(url).netloc == self.domain
 
     def _normalize_url(self, url):
-        # حذف fragment و trailing slash اضافه
         parsed = urlparse(url)
         clean = parsed._replace(fragment="").geturl()
         if clean.endswith("/"):
