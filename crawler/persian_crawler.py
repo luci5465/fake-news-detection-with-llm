@@ -57,6 +57,7 @@ class IsnaCrawler:
         return urlparse(url).netloc == self.domain
 
     def _normalize_url(self, url):
+        # حذف fragment و trailing slash اضافه
         parsed = urlparse(url)
         clean = parsed._replace(fragment="").geturl()
         if clean.endswith("/"):
@@ -99,6 +100,7 @@ class IsnaCrawler:
             if self._is_same_domain(full):
                 outgoing.append(full)
 
+        # id یکتا برای هر مقاله
         if url not in self.article_ids:
             self.article_ids[url] = len(self.article_ids) + 1
 
@@ -146,7 +148,7 @@ class IsnaCrawler:
             else:
                 print("   ⚠ Not an article (or too short)")
 
-            
+            # اضافه‌کردن لینک‌های جدید به صف
             for a in soup.find_all("a", href=True):
                 full = urljoin(url, a["href"])
                 full = self._normalize_url(full)
