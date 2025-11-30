@@ -1,10 +1,7 @@
 Fake news detection using LLMs 
 
-نصب پکیج‌ها:
 pip install -r requirements.txt
-
-
-اجرای تک‌مرحله‌ای: 
+ 
 python crawler/persian_crawler.py
 python parser/content_cleaner.py
 python index/index_builder.py
