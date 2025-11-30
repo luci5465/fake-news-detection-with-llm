@@ -1,116 +1,116 @@
 import json
 import os
 from collections import defaultdict
+import math
+
 
 class WebGraph:
     def __init__(self):
-        self.outgoing = defaultdict(set)
-        self.incoming = defaultdict(set)
-        self.nodes = set()
+        self.outgoing = defaultdict(list)  # doc_id -> [doc_id,...]
+        self.incoming = defaultdict(list)  # doc_id -> [doc_id,...]
+        self.id_to_url = {}               # doc_id -> url
 
-    # -------------------------------------------------------
-    # Pass 1 — Collect outgoing links
-    # -------------------------------------------------------
-    def build_outgoing(self, documents):
-        for doc in documents:
-            url = doc["url"]
-            self.nodes.add(url)
+    def build(self, documents):
+        # مرحله ۱: map از URL به doc_id
+        url_to_id = {}
 
-            for link in doc["outgoing_links"]:
-                self.outgoing[url].add(link)
-                self.nodes.add(link)
+        for i, doc in enumerate(documents):
+            raw_id = doc.get("id")
+            doc_id = str(raw_id) if raw_id is not None else str(i)
 
-    # -------------------------------------------------------
-    # Pass 2 — Compute incoming links
-    # -------------------------------------------------------
-    def build_incoming(self):
-        for src, links in self.outgoing.items():
-            for dst in links:
-                self.incoming[dst].add(src)
+            url = doc.get("url")
+            if not url:
+                continue
 
-    # -------------------------------------------------------
-    # Compute node degree (in-degree, out-degree)
-    # -------------------------------------------------------
+            self.id_to_url[doc_id] = url
+            url_to_id[url] = doc_id
+
+        # مرحله ۲: ساخت گراف بر اساس outgoing_links
+        for i, doc in enumerate(documents):
+            raw_id = doc.get("id")
+            doc_id = str(raw_id) if raw_id is not None else str(i)
+
+            if doc_id not in self.id_to_url:
+                # یعنی url نداشت یا قبلاً اسکپ شده
+                continue
+
+            links = doc.get("outgoing_links", []) or []
+            for link in links:
+                target_id = url_to_id.get(link)
+                if target_id is None:
+                    # لینکی که در مجموعه اسناد ما نیست
+                    continue
+
+                # edge: doc_id -> target_id
+                self.outgoing[doc_id].append(target_id)
+                self.incoming[target_id].append(doc_id)
+
     def compute_degree(self):
         degree = {}
 
-        for n in self.nodes:
-            in_d = len(self.incoming.get(n, []))
-            out_d = len(self.outgoing.get(n, []))
-            degree[n] = {"in": in_d, "out": out_d}
+        all_nodes = set(self.outgoing.keys()) | set(self.incoming.keys())
+
+        for node in all_nodes:
+            out_d = len(self.outgoing.get(node, []))
+            in_d = len(self.incoming.get(node, []))
+            degree[node] = {"in": in_d, "out": out_d}
 
         return degree
 
-    # -------------------------------------------------------
-    # HITS Algorithm
-    # -------------------------------------------------------
-    def hits(self, max_iter=30, eps=1e-8):
-        auth = {n: 1.0 for n in self.nodes}
-        hub =  {n: 1.0 for n in self.nodes}
+    def hits(self, max_iter=20):
+        nodes = list(set(self.outgoing.keys()) | set(self.incoming.keys()))
+        if not nodes:
+            return {}, {}
+
+        auth = {n: 1.0 for n in nodes}
+        hub = {n: 1.0 for n in nodes}
 
         for _ in range(max_iter):
+            # update authority
             new_auth = {}
+            for n in nodes:
+                new_auth[n] = sum(hub.get(i, 0.0) for i in self.incoming.get(n, []))
+
+            # update hub
             new_hub = {}
+            for n in nodes:
+                new_hub[n] = sum(new_auth.get(o, 0.0) for o in self.outgoing.get(n, []))
 
-            # Authority(n) = sum of hub(i) for i linking to n
-            for n in self.nodes:
-                new_auth[n] = sum(hub.get(src, 0) for src in self.incoming.get(n, []))
+            # normalize
+            norm_a = math.sqrt(sum(v * v for v in new_auth.values())) or 1.0
+            norm_h = math.sqrt(sum(v * v for v in new_hub.values())) or 1.0
 
-            # Hub(n) = sum of authority(i) for i linked from n
-            for n in self.nodes:
-                new_hub[n] = sum(new_auth.get(dst, 0) for dst in self.outgoing.get(n, []))
-
-            # Normalization
-            norm_a = sum(new_auth.values()) or 1
-            norm_h = sum(new_hub.values()) or 1
-
-            for n in self.nodes:
-                new_auth[n] /= norm_a
-                new_hub[n] /= norm_h
-
-            # Check convergence
-            if max(abs(new_auth[n] - auth.get(n, 0)) for n in self.nodes) < eps:
-                break
-
-            auth = new_auth
-            hub = new_hub
+            for n in nodes:
+                auth[n] = new_auth[n] / norm_a
+                hub[n] = new_hub[n] / norm_h
 
         return auth, hub
 
-    # -------------------------------------------------------
-    # Save Graph
-    # -------------------------------------------------------
     def save(self, path, degrees, authority, hub):
         data = {
-            "nodes": list(self.nodes),
-            "outgoing": {k: list(v) for k, v in self.outgoing.items()},
-            "incoming": {k: list(v) for k, v in self.incoming.items()},
+            "outgoing": self.outgoing,
+            "incoming": self.incoming,
             "degree": degrees,
             "authority": authority,
-            "hub": hub
+            "hub": hub,
+            "id_to_url": self.id_to_url,
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+        print(f"✓ WebGraph built & saved at: {path}")
 
-# ---------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------
+
 if __name__ == "__main__":
     base = os.path.dirname(os.path.dirname(__file__))
-    cleaned_path = os.path.join(base, "data", "cleaned", "isna_cleaned.json")
-    save_path = os.path.join(base, "data", "isna_graph.json")
+    cleaned = os.path.join(base, "data", "cleaned", "isna_cleaned.json")
+    save = os.path.join(base, "data", "isna_graph.json")
 
-    with open(cleaned_path, "r", encoding="utf-8") as f:
+    with open(cleaned, "r", encoding="utf-8") as f:
         docs = json.load(f)
 
     g = WebGraph()
-    g.build_outgoing(docs)
-    g.build_incoming()
+    g.build(docs)
     degree = g.compute_degree()
     auth, hub = g.hits()
-
-    g.save(save_path, degree, auth, hub)
-
-    print("✓ WebGraph built & saved at:", save_path)
-
+    g.save(save, degree, auth, hub)
