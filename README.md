@@ -5,7 +5,7 @@ pip install -r requirements.txt
 ( # 1. Create the virtual environment
 python3 -m venv venv
 
-# 2. Activate the environment (Linux)
+ # 2. Activate the environment (Linux)
 source venv/bin/activate  )
 
 Run the Project :
