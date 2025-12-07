@@ -1,22 +1,29 @@
-Fake news detection using LLMs 
+( Fake news detection using LLMs )
 
 pip install -r requirements.txt
 
- 
-python crawler/persian_crawler.py
+( # 1. Create the virtual environment
+python3 -m venv venv
 
-python parser/content_cleaner.py
+# 2. Activate the environment (Linux)
+source venv/bin/activate  )
 
-python index/index_builder.py
-
-python index/inverted_index.py
-
-python graph/graph_builder.py
-
-python llm/embedder.py
-
-python test/test_fake_news.py
+Run the Project :
+python main_cli.py
 
 
+Choose an Operation:
 
-crawler → clean → index → graph → llm → verdict
+1-5: Run individual modules (Crawling, Cleaning, Indexing, Graph, Detection).
+
+6. Automatic Pipeline: The recommended way. It runs the entire workflow sequentially:
+
+1 Crawls data from selected sites.
+
+2 Cleans and normalizes texts.
+
+3 Builds the Inverted Index.
+
+4 Builds the Web Graph & calculates PageRank.
+
+5 Launches the Fake News Detector interface.
