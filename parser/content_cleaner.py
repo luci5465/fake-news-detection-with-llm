@@ -101,10 +101,11 @@ def run_cleaner():
         print(f"Directory not found!")
         return
 
-    raw_files = [f for f in os.listdir(DATA_DIR) if f.endswith("_raw.json")]
+    raw_files = [f for f in os.listdir(DATA_DIR) if f.endswith("_data.json")]
     
     if not raw_files:
-        print("No raw data files (*_raw.json) found to clean.")
+        print("No raw data files (*_data.json) found.")
+        print("Make sure you ran the crawlers first!")
         return
 
     print(f"Found {len(raw_files)} raw files to process.\n")
@@ -112,7 +113,7 @@ def run_cleaner():
     total_processed = 0
     for file in raw_files:
         in_path = os.path.join(DATA_DIR, file)
-        out_name = file.replace("_raw.json", "_clean.json")
+        out_name = file.replace("_data.json", "_clean.json")
         out_path = os.path.join(DATA_DIR, out_name)
         
         total_processed += process_file(in_path, out_path)
