@@ -2,8 +2,10 @@ import json
 import re
 import os
 import unicodedata
+import sys
 
-DATA_DIR = os.environ.get("PROJECT_DATA_DIR", "/home/luci/Desktop/fake_news/data")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.environ.get("PROJECT_DATA_DIR", os.path.join(BASE_DIR, "data"))
 
 def normalize_persian(text):
     if not text: return ""
@@ -11,12 +13,13 @@ def normalize_persian(text):
     replacements = {
         "ي": "ی", "ى": "ی", "ك": "ک", "ة": "ه",
         "ؤ": "و", "ئ": "ی", "أ": "ا", "إ": "ا",
-        "اً": "ا",
+        "آ": "ا", "اً": "ا",
         "‌": " ", "\u200c": " ",
-        "…": "", "—": "-", "ـ": "",
+        "…": " ", "—": "-", "ـ": "",
+        "«": '"', "»": '"', "“": '"', "”": '"'
     }
     
-    text = unicodedata.normalize("NFC", text)
+    text = unicodedata.normalize("NFKC", text)
     for f, t in replacements.items():
         text = text.replace(f, t)
     
@@ -33,7 +36,8 @@ def clean_text(raw_content):
         r"لینک کوتاه",
         r"برای مشاهده.*?کلیک کنید",
         r"مشاهده خبر",
-        r"تولید منبع[:\s]*\w+",
+        r"منبع[:\s]*\w+",
+        r"تولید[:\s]*\w+",
         r"https?://[^\s<>\"']+|www\.[^\s<>\"']+",
         r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}",
         r"@[a-zA-Z0-9_]+",
@@ -45,8 +49,8 @@ def clean_text(raw_content):
 
     text = re.sub(r"\s+", " ", text).strip()
     
-    sentences = re.split(r"(?<=[.?!])\s+", text)
-    clean_sentences = [s.strip() for s in sentences if len(s.split()) > 7]
+    sentences = re.split(r"(?<=[.?!؛])\s+", text)
+    clean_sentences = [s.strip() for s in sentences if len(s.split()) > 4]
     
     return " . ".join(clean_sentences).strip()
 
@@ -55,7 +59,7 @@ def process_file(input_path, output_path):
         with open(input_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as e:
-        print(f"❌ Failed to load {os.path.basename(input_path)}: {e}")
+        print(f"Failed to load {os.path.basename(input_path)}")
         return 0
 
     cleaned_data = []
@@ -65,7 +69,7 @@ def process_file(input_path, output_path):
         raw_content = item.get("content", "")
         clean_content = clean_text(raw_content)
         
-        if len(clean_content) < 100:
+        if len(clean_content) < 50:
             dropped_count += 1
             continue
 
@@ -83,10 +87,10 @@ def process_file(input_path, output_path):
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(cleaned_data, f, ensure_ascii=False, indent=2)
-        print(f"✅ Cleaned {os.path.basename(input_path)} -> {len(cleaned_data)} items (Dropped {dropped_count})")
+        print(f"Cleaned {os.path.basename(input_path)} -> {len(cleaned_data)} items (Dropped {dropped_count})")
         return len(cleaned_data)
     except Exception as e:
-        print(f"❌ Error saving {output_path}: {e}")
+        print(f"Error saving {output_path}: {e}")
         return 0
 
 def run_cleaner():
@@ -94,13 +98,13 @@ def run_cleaner():
     print(f"Scanning Directory: {DATA_DIR}")
     
     if not os.path.exists(DATA_DIR):
-        print(f"❌ Directory not found!")
+        print(f"Directory not found!")
         return
 
     raw_files = [f for f in os.listdir(DATA_DIR) if f.endswith("_raw.json")]
     
     if not raw_files:
-        print("⚠️ No raw data files (*_raw.json) found to clean.")
+        print("No raw data files (*_raw.json) found to clean.")
         return
 
     print(f"Found {len(raw_files)} raw files to process.\n")
@@ -113,7 +117,7 @@ def run_cleaner():
         
         total_processed += process_file(in_path, out_path)
 
-    print(f"\n🎉 Total Cleaned Articles Available: {total_processed}")
+    print(f"\nTotal Cleaned Articles Available: {total_processed}")
 
 if __name__ == "__main__":
     run_cleaner()
