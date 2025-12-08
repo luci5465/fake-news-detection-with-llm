@@ -1,7 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
 from collections import deque
-import logging
 import time
 import random
 import re
@@ -10,9 +9,12 @@ from tqdm import tqdm
 import json
 import os
 import sys
+import urllib3
 
-# تنظیم مسیر ذخیره‌سازی مرکزی
-DATA_DIR = os.environ.get("PROJECT_DATA_DIR", "/home/luci/Desktop/fake_news/data")
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.environ.get("PROJECT_DATA_DIR", os.path.join(BASE_DIR, "data"))
 
 def ensure_data_dir():
     if not os.path.exists(DATA_DIR):
@@ -21,24 +23,34 @@ def ensure_data_dir():
         except OSError:
             pass
 
-def safe_request(url, retries=4, timeout=9):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+def safe_request(url, retries=4, timeout=10):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Connection": "keep-alive"
+    }
+    
     for attempt in range(retries):
         try:
-            r = requests.get(url, headers=headers, timeout=timeout)
+            r = requests.get(url, headers=headers, timeout=timeout, verify=False)
             if r.status_code == 200:
                 content_type = r.headers.get("Content-Type", "")
                 if "text/html" in content_type.lower():
                     return r.text
-        except Exception as e:
+            elif r.status_code == 404:
+                return None
+        except Exception:
             pass
-        time.sleep((2 ** attempt) + random.random())
+        
+        sleep_time = (1.5 ** attempt) + random.uniform(0.5, 1.5)
+        time.sleep(sleep_time)
+        
     return None
 
 def clean_soup(soup):
     remove_tags = [
         "script", "style", "iframe", "video", "figure",
-        "nav", "footer", "header", "aside", "form"
+        "nav", "footer", "header", "aside", "form", "svg", "button"
     ]
     for tag_name in remove_tags:
         for tag in soup.find_all(tag_name):
@@ -53,7 +65,7 @@ def same_domain(url):
     return parsed.netloc.endswith("isna.ir") or parsed.netloc in ("www.isna.ir", "isna.ir")
 
 def is_news_url(url):
-    pattern = r"https?://(www\.)?isna\.ir/(fa/)?(news|service|photo)/\d{6,16}(/[^ \s<>#]+)?"
+    pattern = r"https?://(www\.)?isna\.ir/(fa/)?(news|service|photo)/\d{6,16}(/[^ \s<>]+)?"
     return re.match(pattern, url) is not None
 
 def extract_headline(soup):
@@ -176,37 +188,39 @@ def extract_links(soup, base_url):
 
 def save_data(data, depth):
     if not data:
-        print("No data collected to save.")
         return
 
     ensure_data_dir()
-    filename = f"isna_depth{depth}_raw.json"
+    filename = f"isna_depth{depth}_data.json"
     filepath = os.path.join(DATA_DIR, filename)
 
-    existing_data = []
+    current_data = []
     if os.path.exists(filepath):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
-                existing_data = json.load(f)
-        except:
-            pass
+                current_data = json.load(f)
+        except json.JSONDecodeError:
+            current_data = []
+
+    existing_urls = {d['url'] for d in current_data}
+    new_items = [d for d in data if d['url'] not in existing_urls]
     
-    
-    all_data = existing_data + data
-    unique_data = {item['url']: item for item in all_data}.values()
-    final_list = list(unique_data)
+    if not new_items:
+        print("No new unique items to save.")
+        return
+
+    final_data = current_data + new_items
 
     try:
         with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(final_list, f, ensure_ascii=False, indent=2)
-        print(f"\n✅ Successfully saved {len(final_list)} unique articles to:")
-        print(f"   📂 {filepath}")
+            json.dump(final_data, f, ensure_ascii=False, indent=2)
+        print(f"\nSuccessfully saved {len(new_items)} new articles. Total: {len(final_data)}")
+        print(f"Path: {filepath}")
     except Exception as e:
-        print(f"❌ Error saving file: {e}")
+        print(f"Error saving file: {e}")
 
 def run_interactive():
     print("\n--- ISNA Crawler Setup ---")
-    
     
     try:
         d_in = input("Enter Crawl Depth (1-10) [Default: 2]: ").strip()
@@ -214,7 +228,6 @@ def run_interactive():
     except ValueError:
         max_depth = 2
 
-    
     try:
         p_in = input("Max Pages to Fetch [Default: 100]: ").strip()
         max_pages = int(p_in) if p_in else 100
@@ -223,11 +236,11 @@ def run_interactive():
 
     start_url = "https://www.isna.ir/"
     
-    print(f"\n🚀 Starting Crawl...")
-    print(f"   Target: {start_url}")
-    print(f"   Depth: {max_depth}")
-    print(f"   Max Pages: {max_pages}")
-    print("-----------------------------------")
+    print(f"\nStarting Crawl...")
+    print(f"Target: {start_url}")
+    print(f"Depth: {max_depth}")
+    print(f"Max Pages: {max_pages}")
+    print("-" * 30)
 
     visited = set()
     queue = deque([(start_url, 0)])
@@ -250,7 +263,6 @@ def run_interactive():
 
         soup = clean_soup(BeautifulSoup(html, "html.parser"))
         
-        
         if url == start_url or not is_news_url(url):
             if depth < max_depth:
                 new_links = extract_links(soup, url)
@@ -260,7 +272,6 @@ def run_interactive():
                         in_queue.add(link)
             continue
 
-        
         title = extract_headline(soup)
         if not title:
             continue
@@ -281,7 +292,6 @@ def run_interactive():
         results.append(item)
         pbar.update(1)
 
-        
         if depth < max_depth:
             for link in item["outgoing_links"]:
                 if link not in visited and link not in in_queue:
@@ -292,7 +302,7 @@ def run_interactive():
 
     pbar.close()
     
-    print(f"\n🎉 Crawl Finished. Collected {len(results)} pages.")
+    print(f"\nCrawl Finished. Collected {len(results)} pages.")
     save_data(results, max_depth)
 
 if __name__ == "__main__":
