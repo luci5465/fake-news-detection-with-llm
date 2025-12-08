@@ -3,7 +3,8 @@ import sys
 import subprocess
 import time
 
-DEFAULT_DATA_DIR = "/home/luci/Desktop/fake_news/data"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DATA_DIR = os.path.join(BASE_DIR, "data")
 
 def ensure_data_dir():
     if not os.path.exists(DEFAULT_DATA_DIR):
