@@ -1,7 +1,6 @@
+import os
 import json
 import math
-import os
-import sys
 import re
 import unicodedata
 
@@ -9,7 +8,6 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("PROJECT_DATA_DIR", os.path.join(BASE_DIR, "data"))
 INDEX_DIR = os.path.join(BASE_DIR, "index")
 INDEX_FILE = os.path.join(INDEX_DIR, "inverted_index.json")
-GRAPH_FILE = os.path.join(DATA_DIR, "news_graph.json")
 
 PERSIAN_STOPWORDS = {
     "از", "به", "در", "که", "و", "را", "این", "آن", "برای", "با", "است", "شد", "می", "ها", "های", "بر",
@@ -19,143 +17,122 @@ PERSIAN_STOPWORDS = {
 
 class SearchEngine:
     def __init__(self):
-        self.index = {}
-        self.graph = {}
         self.is_loaded = False
-        self.load_data()
+        self.index_data = {}
+        self.doc_details_map = {}
+        self.load_index()
 
-    def normalize(self, text):
+    def normalize_text(self, text):
+        if not text: return ""
         text = unicodedata.normalize("NFKC", text)
         text = re.sub(r'[^\w\s]', ' ', text)
         return re.sub(r'\s+', ' ', text).strip()
 
     def tokenize(self, text):
-        tokens = self.normalize(text).split()
+        text = self.normalize_text(text)
+        tokens = text.split()
         return [t for t in tokens if t not in PERSIAN_STOPWORDS and len(t) > 1]
 
-    def load_data(self):
-        if not os.path.exists(INDEX_FILE):
-            print(f"Index file not found at: {INDEX_FILE}")
-            print("Please run index_builder.py first.")
-            return
-
-        print("Loading Index & Graph...")
+    def load_raw_content(self):
         try:
+            if not os.path.exists(DATA_DIR):
+                return
+
+            for f in os.listdir(DATA_DIR):
+                if f.endswith("_clean.json"):
+                    
+                    file_source = "نامشخص"
+                    if "isna" in f.lower(): file_source = "خبرگزاری ایسنا"
+                    elif "tabnak" in f.lower(): file_source = "تابناک"
+                    elif "tasnim" in f.lower(): file_source = "خبرگزاری تسنیم"
+                    elif "fars" in f.lower(): file_source = "خبرگزاری فارس"
+                    elif "irna" in f.lower(): file_source = "خبرگزاری ایرنا"
+
+                    path = os.path.join(DATA_DIR, f)
+                    with open(path, "r", encoding="utf-8") as file:
+                        docs = json.load(file)
+                        for doc in docs:
+                            self.doc_details_map[doc['id']] = {
+                                'content': doc.get('content', ''),
+                                'source': doc.get('source', file_source)
+                            }
+        except Exception as e:
+            print(f"Warning: Could not load raw content: {e}")
+
+    def load_index(self):
+        print("Loading Inverted Index...")
+        try:
+            if not os.path.exists(INDEX_FILE):
+                print(f"Index file not found at {INDEX_FILE}. Please run index_builder.py first.")
+                return
+
             with open(INDEX_FILE, "r", encoding="utf-8") as f:
-                self.index = json.load(f)
-            
-            if os.path.exists(GRAPH_FILE):
-                with open(GRAPH_FILE, "r", encoding="utf-8") as f:
-                    self.graph = json.load(f)
-            else:
-                self.graph = {"pagerank": {}}
-                print("Warning: Graph file not found. Ranking will rely only on content.")
+                self.index_data = json.load(f)
+
+            self.load_raw_content()
             
             self.is_loaded = True
-            doc_count = self.index.get('stats', {}).get('total_docs', 0)
-            print(f"Engine Ready. Loaded {doc_count} documents.")
+            print(f"Engine Ready. Loaded {self.index_data['stats']['total_docs']} docs.")
             
         except Exception as e:
-            print(f"Error loading data: {e}")
+            print(f"Error loading search engine: {e}")
 
-    def search(self, query, top_k=10, alpha=0.85):
-        if not self.is_loaded: return []
+    def search(self, query, top_k=3):
+        if not self.is_loaded or not query:
+            return []
 
         query_tokens = self.tokenize(query)
-        if not query_tokens: return []
+        if not query_tokens:
+            return []
+
+        query_vec = {}
+        for token in query_tokens:
+            query_vec[token] = query_vec.get(token, 0) + 1
+        
+        query_norm = 0
+        query_tfidf = {}
+        
+        vocab = self.index_data.get('vocab', {})
+        idf = self.index_data.get('idf', {})
+
+        for term, count in query_vec.items():
+            if term in idf:
+                w = (1 + math.log(count)) * idf[term]
+                query_tfidf[term] = w
+                query_norm += w ** 2
+        
+        query_norm = math.sqrt(query_norm)
 
         scores = {}
         
-        vocab = self.index.get("vocab", {})
-        idf = self.index.get("idf", {})
-        doc_norms = self.index.get("doc_norms", {})
+        for term, w_q in query_tfidf.items():
+            if term in vocab:
+                postings = vocab[term]
+                for p in postings:
+                    doc_id = p['doc_id']
+                    w_d = p['tfidf']
+                    scores[doc_id] = scores.get(doc_id, 0) + (w_q * w_d)
 
-        q_vec = {}
-        for t in query_tokens:
-            q_vec[t] = q_vec.get(t, 0) + 1
-        
-        q_norm = 0
-        for t in q_vec:
-            if t in idf:
-                w = (1 + math.log(q_vec[t])) * idf[t]
-                q_vec[t] = w
-                q_norm += w**2
+        doc_norms = self.index_data.get('doc_norms', {})
+        final_results = []
+
+        for doc_id, dot_product in scores.items():
+            d_norm = doc_norms.get(doc_id, 1)
+            if d_norm > 0 and query_norm > 0:
+                similarity = dot_product / (d_norm * query_norm)
             else:
-                q_vec[t] = 0
-        q_norm = math.sqrt(q_norm)
-
-        if q_norm == 0: return []
-
-        for t, q_weight in q_vec.items():
-            if q_weight == 0 or t not in vocab: continue
+                similarity = 0
             
-            postings = vocab[t]
-            for p in postings:
-                doc_id = p['doc_id']
-                doc_tfidf = p['tfidf']
+            if similarity > 0.05:
+                doc_info = self.index_data['doc_map'].get(doc_id, {}).copy()
+                details = self.doc_details_map.get(doc_id, {})
                 
-                scores[doc_id] = scores.get(doc_id, 0) + (q_weight * doc_tfidf)
+                doc_info['id'] = doc_id
+                doc_info['score'] = similarity
+                doc_info['content'] = details.get('content', "")
+                doc_info['source'] = details.get('source', "نامشخص")
+                
+                final_results.append(doc_info)
 
-        for did in scores:
-            if did in doc_norms and doc_norms[did] > 0:
-                scores[did] /= (doc_norms[did] * q_norm)
-
-        pagerank = self.graph.get("pagerank", {})
-        final_scores = []
-        
-        doc_map = self.index.get("doc_map", {})
-
-        for did, content_score in scores.items():
-            pr_score = pagerank.get(did, 0)
-            
-            hybrid_score = (alpha * content_score) + ((1 - alpha) * pr_score * 20)
-            
-            doc_info = doc_map.get(did, {})
-            if isinstance(doc_info, str):
-                url = doc_info
-                title = "No Title"
-                date = "Unknown"
-            else:
-                url = doc_info.get('url', 'N/A')
-                title = doc_info.get('title', 'N/A')
-                date = doc_info.get('date', 'N/A')
-
-            final_scores.append({
-                "id": did,
-                "title": title,
-                "url": url,
-                "date": date,
-                "score": hybrid_score,
-                "content_score": content_score,
-                "pr_score": pr_score
-            })
-
-        final_scores.sort(key=lambda x: x["score"], reverse=True)
-        return final_scores[:top_k]
-
-def run_interactive():
-    engine = SearchEngine()
-    if not engine.is_loaded: return
-
-    print("\n--- Search Engine (Interactive) ---")
-    print("Type 'exit' to quit.\n")
-
-    while True:
-        query = input("Search > ").strip()
-        if query.lower() in ('exit', 'quit'): break
-        if not query: continue
-
-        results = engine.search(query)
-        
-        print(f"\nResults for: {query}")
-        if not results:
-            print("No matches found.")
-        else:
-            for i, res in enumerate(results, 1):
-                print(f"{i}. {res['title']}")
-                print(f"   Date: {res['date']} | URL: {res['url']}")
-                print(f"   Score: {res['score']:.4f} (Content: {res['content_score']:.4f} | PR: {res['pr_score']:.6f})")
-                print("-" * 40)
-
-if __name__ == "__main__":
-    run_interactive()
+        final_results = sorted(final_results, key=lambda x: x['score'], reverse=True)
+        return final_results[:top_k]
