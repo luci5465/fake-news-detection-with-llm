@@ -38,6 +38,18 @@ def run_script(script_path, pause=True):
     else:
         time.sleep(1)
 
+def launch_new_window(command, title="Process"):
+    print(f"\n🚀 Launching {title}...")
+    try:
+        
+        cmd = f'start powershell -NoExit -Command "{command}"'
+        subprocess.Popen(cmd, shell=True)
+        print("Done.")
+        time.sleep(1)
+    except Exception as e:
+        print(f"Error launching window: {e}")
+        input("Press Enter...")
+
 def list_and_select(directory):
     if not os.path.exists(directory):
         print(f"\n[Error] Directory not found: {directory}")
@@ -76,68 +88,30 @@ def list_and_select(directory):
             print("Invalid input.")
             time.sleep(0.5)
 
-def run_automatic_mode(base_dir):
-    os.system('clear' if os.name == 'posix' else 'cls')
-    print("--- Automatic Pipeline ---")
-    
-    print("\n[Step 1/6] Crawling Data")
-    ans = input("Do you want to run crawlers? (y/n): ").strip().lower()
-    
-    if ans == 'y':
-        crawlers_dir = os.path.join(base_dir, "crawlers")
-        files = sorted([f for f in os.listdir(crawlers_dir) if f.endswith('.py') and f != '__init__.py'])
-        
-        if not files:
-            print("No crawlers found.")
-        else:
-            print(f"Running {len(files)} crawlers sequentially...")
-            for f in files:
-                run_script(os.path.join(crawlers_dir, f), pause=False)
-
-    print("\n[Step 2/6] Cleaning & Normalizing Data...")
-    run_script(os.path.join(base_dir, "parser", "content_cleaner.py"), pause=False)
-
-    print("\n[Step 3/6] Building Inverted Index...")
-    run_script(os.path.join(base_dir, "index", "index_builder.py"), pause=False)
-
-    print("\n[Step 4/6] Building Graph & Calculating PageRank...")
-    run_script(os.path.join(base_dir, "graph", "graph_builder.py"), pause=False)
-
-    print("\n[Step 5/6] Search Engine Core")
-    print("Skipping interactive search in automatic mode.")
-    print("You can test it manually from the main menu.")
-
-    print("\n[Step 6/6] Launching Fake News Detector (LLM)...")
-    llm_script = os.path.join(base_dir, "llm", "fake_news_detector.py")
-    if os.path.exists(llm_script):
-        run_script(llm_script, pause=True)
-    else:
-        print("LLM module not found yet.")
-        input("Press Enter to finish...")
-
 def main_menu():
     ensure_data_dir()
     
     crawlers_dir = os.path.join(BASE_DIR, "crawlers")
     parser_dir = os.path.join(BASE_DIR, "parser")
     index_dir = os.path.join(BASE_DIR, "index")
-    graph_dir = os.path.join(BASE_DIR, "graph")
-    search_dir = os.path.join(BASE_DIR, "search")
+    
     llm_dir = os.path.join(BASE_DIR, "llm")
     
+    app_path = os.path.join(llm_dir, "app.py")
+
     while True:
         os.system('clear' if os.name == 'posix' else 'cls')
         print(f"Project Root: {BASE_DIR}")
-        print(f"Data Path:    {DEFAULT_DATA_DIR}\n")
+        print("-" * 40)
         
-        print("1. Crawlers      (Data Acquisition)")
-        print("2. Parser        (Data Cleaning)")
-        print("3. Indexer       (Build Index)")
-        print("4. Graph         (Build Graph & PageRank)")
-        print("5. Search Engine (Interactive Test)")
-        print("6. Detector      (LLM Fake News Detection)")
-        print("7. Auto Pipeline (Run All Steps)")
-        print("\n0. Exit")
+        print("1. Crawlers       (Data Acquisition)")
+        print("2. Parser         (Data Cleaning)")
+        print("3. Indexer        (Build Index)")
+        print("-" * 40)
+        print("4. Start AI Engine (Ollama)")
+        print("5. Launch Web UI   (Streamlit)")
+        print("-" * 40)
+        print("0. Exit")
         
         choice = input("\nSelect option: ").strip()
         
@@ -151,14 +125,18 @@ def main_menu():
             list_and_select(parser_dir)
         elif choice == '3':
             list_and_select(index_dir)
+            
         elif choice == '4':
-            list_and_select(graph_dir)
+            launch_new_window("ollama serve", "AI Engine")
+            
         elif choice == '5':
-            list_and_select(search_dir)
-        elif choice == '6':
-            list_and_select(llm_dir)
-        elif choice == '7':
-            run_automatic_mode(BASE_DIR)
+            if os.path.exists(app_path):
+                
+                launch_new_window(f"streamlit run \\\"{app_path}\\\"", "Web Interface")
+            else:
+                print(f"\n[Error] app.py not found at: {app_path}")
+                input("Press Enter...")
+                
         else:
             print("Invalid option.")
             time.sleep(0.5)
