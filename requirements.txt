@@ -1,6 +1,20 @@
+# Web Crawling & Network
 requests
 beautifulsoup4
+urllib3
 tqdm
+
+# Data Processing & Math (TF-IDF logic)
 numpy
+pandas
 scikit-learn
-lxml
+
+# Persian Text Processing (Optional but recommended)
+hazm
+
+# Web Interface
+streamlit
+watchdog
+
+# LLM Interaction (If using official library, otherwise requests is enough)
+ollama
