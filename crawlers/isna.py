@@ -10,6 +10,8 @@ import json
 import os
 import sys
 import urllib3
+import concurrent.futures
+from threading import Lock
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -23,7 +25,7 @@ def ensure_data_dir():
         except OSError:
             pass
 
-def safe_request(url, retries=4, timeout=10):
+def safe_request(url, retries=3, timeout=5):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -41,8 +43,6 @@ def safe_request(url, retries=4, timeout=10):
         except Exception:
             pass
         
-        time.sleep((1.5 ** attempt) + random.uniform(0.5, 1.5))
-
     return None
 
 def clean_soup(soup):
@@ -69,8 +69,7 @@ def extract_headline(soup):
         soup.title
     ]
     for c in cands:
-        if not c: 
-            continue
+        if not c: continue
         if hasattr(c, "get_text"):
             txt = c.get_text(strip=True)
         else:
@@ -87,20 +86,13 @@ def extract_content(soup):
     return text if len(text.split()) > 50 else ""
 
 def normalize_date(raw):
-    if not raw: 
-        return "unknown"
-    
+    if not raw: return "unknown"
     raw = raw.replace("،", " ").replace("/", " ").strip()
-    
     months = {
-        "فروردین": "01", "اردیبهشت": "02", "خرداد": "03",
-        "تیر": "04", "مرداد": "05", "شهریور": "06",
-        "مهر": "07", "آبان": "08", "آذر": "09",
-        "دی": "10", "بهمن": "11", "اسفند": "12"
+        "فروردین": "01", "اردیبهشت": "02", "خرداد": "03", "تیر": "04", "مرداد": "05", "شهریور": "06",
+        "مهر": "07", "آبان": "08", "آذر": "09", "دی": "10", "بهمن": "11", "اسفند": "12"
     }
-    
     day = month = year = hour = minute = ""
-    
     for part in raw.split():
         if part in months:
             month = months[part]
@@ -116,26 +108,19 @@ def normalize_date(raw):
         if hour and minute:
             result += f" {hour}:{minute}"
         return result
-        
     return raw
 
 def extract_publish_date(soup):
     cands = [
         soup.find("time"),
         soup.find("span", class_=re.compile("date")),
-        soup.find("meta", attrs={"property": "article:published_time"}),
-        soup.find("meta", attrs={"name": "pubdate"}),
-        soup.find("meta", attrs={"name": "lastmod"})
+        soup.find("meta", attrs={"property": "article:published_time"})
     ]
-    
     for c in cands:
-        if not c:
-            continue
+        if not c: continue
         txt = c.get("content") if c.has_attr("content") else c.get_text(strip=True)
-        txt = txt.strip()
         if len(txt) > 5:
-            return normalize_date(txt)
-            
+            return normalize_date(txt.strip())
     return "unknown"
 
 def extract_links(soup, base_url):
@@ -147,12 +132,10 @@ def extract_links(soup, base_url):
     return list(links)
 
 def save_data(data, depth):
-    if not data:
-        return
-
+    if not data: return
     ensure_data_dir()
     path = os.path.join(DATA_DIR, f"isna_depth{depth}_data.json")
-
+    
     current = []
     if os.path.exists(path):
         try:
@@ -160,82 +143,98 @@ def save_data(data, depth):
                 current = json.load(f)
         except Exception:
             current = []
-
+            
     existing = {d["url"] for d in current}
     merged = current + [d for d in data if d["url"] not in existing]
-
+    
     with open(path, "w", encoding="utf-8") as f:
         json.dump(merged, f, ensure_ascii=False, indent=2)
-    
     print(f"\n[Saved] {len(merged)} articles saved to {path}")
 
-def run_interactive():
-    try:
-        max_depth = int(input("Enter Crawl Depth [Default 2]: ") or 2)
-    except ValueError:
-        max_depth = 2
+def process_url(url, depth, visited, lock):
+    with lock:
+        if url in visited:
+            return None, []
+        visited.add(url)
+    
+    html = safe_request(url)
+    if not html:
+        return None, []
+        
+    soup = clean_soup(BeautifulSoup(html, "html.parser"))
+    found_links = extract_links(soup, url)
+    
+    if not is_news_url(url):
+        return None, found_links
+        
+    title = extract_headline(soup)
+    content = extract_content(soup)
+    
+    if not title or not content:
+        return None, found_links
+        
+    item = {
+        "url": url,
+        "title": title,
+        "content": content,
+        "publish_date": extract_publish_date(soup),
+        "outgoing_links": found_links, # This is crucial for PageRank
+        "depth": depth,
+        "source": "isna"
+    }
+    
+    return item, found_links
 
-    try:
-        max_pages = int(input("Max Pages [Default 100]: ") or 100)
-    except ValueError:
-        max_pages = 100
+def run_interactive():
+    try: max_depth = int(input("Crawl Depth [2]: ") or 2)
+    except: max_depth = 2
+    try: max_pages = int(input("Max Pages [200]: ") or 200)
+    except: max_pages = 200
+    try: workers = int(input("Threads [10]: ") or 10)
+    except: workers = 10
 
     start_url = "https://www.isna.ir/"
     visited = set()
-    queue = deque([(start_url, 0)])
-    in_queue = {start_url}
+    visited_lock = Lock()
     results = []
-
-    pbar = tqdm(total=max_pages, desc="Crawling News")
-
-    while queue and len(results) < max_pages:
-        url, depth = queue.popleft()
-        
-        if url in visited or depth > max_depth:
-            continue
-
-        visited.add(url)
-        html = safe_request(url)
-        if not html:
-            continue
-
-        soup = clean_soup(BeautifulSoup(html, "html.parser"))
-        found_links = extract_links(soup, url)
-
-        if url == start_url or not is_news_url(url):
-            if depth < max_depth:
-                for link in found_links:
-                    if link not in visited and link not in in_queue:
-                        queue.append((link, depth + 1))
-                        in_queue.add(link)
-            continue
-
-        title = extract_headline(soup)
-        content = extract_content(soup)
-
-        if not title or not content:
-            continue
-
-        item = {
-            "url": url,
-            "title": title,
-            "content": content,
-            "publish_date": extract_publish_date(soup),
-            "depth": depth,
-            "source": "isna"
-        }
-
-        results.append(item)
-        pbar.update(1)
-
-        if depth < max_depth:
-            for link in found_links:
-                if link not in visited and link not in in_queue:
-                    queue.append((link, depth + 1))
-                    in_queue.add(link)
-
-        time.sleep(0.3)
-
+    queue = deque([(start_url, 0)])
+    
+    pbar = tqdm(total=max_pages, desc="Fast Crawling")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        while queue and len(results) < max_pages:
+            current_batch = []
+            while queue and len(current_batch) < workers * 2:
+                current_batch.append(queue.popleft())
+                
+            if not current_batch:
+                break
+                
+            future_to_url = {
+                executor.submit(process_url, url, depth, visited, visited_lock): (url, depth) 
+                for url, depth in current_batch
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_url):
+                if len(results) >= max_pages: break
+                
+                url, depth = future_to_url[future]
+                try:
+                    item, links = future.result()
+                    
+                    if item:
+                        results.append(item)
+                        pbar.update(1)
+                        
+                    if depth < max_depth:
+                        with visited_lock:
+                            for link in links:
+                                if link not in visited:
+                                    queue.append((link, depth + 1))
+                                    
+                except Exception:
+                    pass
+                    
     pbar.close()
     save_data(results, max_depth)
 
